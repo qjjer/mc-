@@ -6,6 +6,17 @@ compatibility_date = "2024-12-18"
 name = "ROOM"
 class_name = "Room"
 
+[[durable_objects.bindings]]
+name = "USER"
+class_name = "User"
+
+[[kv_namespaces]]
+binding = "USER_INDEX"
+id = "13a9db97e94249388d3496de1bac0fe9"  # 在 Cloudflare 面板创建 KV 后填写
+
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["Room"]
+new_sqlite_classes = ["Room", "User"]
+
+[vars]
+JWT_SECRET = " 5fJ3z7Kp9L2wQ8xN4YvR6tE1aB3cD5gH7jM9nP2qS4uV6wX8yZ0bC3dF5"  # 生成一个强随机字符串
