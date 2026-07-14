@@ -12,7 +12,7 @@ class_name = "User"
 
 [[kv_namespaces]]
 binding = "USER_INDEX"
-id = "13a9db97e94249388d3496de1bac0fe9"   # 在 Dashboard 创建后填入
+id = "3f07c65f0bc84d80abffad96b71f21a6"   # 在 Dashboard 创建后填入
 
 [[kv_namespaces]]
 binding = "SESSION_STORE"
