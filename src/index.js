@@ -1,7 +1,9 @@
 // ===== 导入 JWT 库 =====
 import { SignJWT, jwtVerify } from 'jose';
 
-// ===== User Durable Object =====
+// =========================================
+//  User Durable Object
+// =========================================
 export class User {
   constructor(state, env) {
     this.state = state;
@@ -92,7 +94,9 @@ export class User {
   }
 }
 
-// ===== Room Durable Object =====
+// =========================================
+//  Room Durable Object
+// =========================================
 export class Room {
   constructor(state, env) {
     this.state = state;
@@ -111,7 +115,7 @@ export class Room {
         ws.send(message);
       }
     }
-  } 
+  }
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -160,7 +164,6 @@ export class Room {
       if (!exists) {
         members.push({ userId, nickname: nickname || '用户' });
         await this.storage.put('members', members);
-        // 广播成员更新
         this.broadcastMembers(members);
       }
       return new Response('OK', { status: 200 });
@@ -176,7 +179,7 @@ export class Room {
       return new Response('OK', { status: 200 });
     }
 
-    // ---- WebSocket 信令 ----
+    // ---- WebSocket 信令 (关键!) ----
     if (path === '/ws') {
       const userId = url.searchParams.get('user') || 'unknown';
       const pair = new WebSocketPair();
@@ -186,13 +189,14 @@ export class Room {
       this.connections.push(server);
       server.accept();
 
-      // 存储昵称到 server 对象
+      // 尝试获取昵称（从存储中）
       const members = await this.storage.get('members') || [];
       const member = members.find(m => m.userId === userId);
       server.nickname = member ? member.nickname : '用户';
 
       server.addEventListener('message', (event) => {
         const data = event.data;
+        // 转发给房间内所有其他连接
         for (const ws of this.connections) {
           if (ws !== server && ws.readyState === WebSocket.OPEN) {
             ws.send(data);
@@ -219,8 +223,10 @@ export class Room {
   }
 }
 
-// ===== Worker 入口 =====
-//const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
+// =========================================
+//  Worker 入口
+// =========================================
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
 
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -246,23 +252,20 @@ async function hashPassword(password, salt) {
 
 export default {
   async fetch(request, env) {
-    const JWT_SECRET = new TextEncoder().encode(env.JWT_SECRET);
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
-    // ====== 跨域处理 ======
+    // ---- CORS 预检 ----
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     };
-
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // ====== 辅助函数：带 CORS 的响应 ======
     function jsonResponse(data, status = 200) {
       return new Response(JSON.stringify(data), {
         status,
@@ -270,7 +273,7 @@ export default {
       });
     }
 
-    // ====== 获取当前用户 ID（从 JWT） ======
+    // ---- 辅助：从 JWT 获取 userId ----
     async function getUserIdFromAuth(request) {
       const authHeader = request.headers.get('Authorization');
       if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
@@ -283,7 +286,7 @@ export default {
       }
     }
 
-    // ====== 鉴权中间件 ======
+    // ---- 鉴权中间件 ----
     async function requireAuth(request) {
       const userId = await getUserIdFromAuth(request);
       if (!userId) {
@@ -292,91 +295,99 @@ export default {
       return { userId };
     }
 
-    // ====== 临时用户注册 ======
+    // =========================================
+    //  路由处理
+    // =========================================
+
+    // ---- 临时用户注册 ----
     if (path === '/guest/register' && method === 'POST') {
       const { nickname } = await request.json();
       const userId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-      // 存入 KV，1小时过期
       await env.USER_INDEX.put(userId, 'guest', { expirationTtl: 3600 });
       return jsonResponse({ userId });
     }
 
-    // ====== 用户注册 ======
+    // ---- 正式用户注册 ----
     if (path === '/user/register' && method === 'POST') {
       const { userId, nickname, password } = await request.json();
-
       const exists = await env.USER_INDEX.get(userId);
       if (exists !== null) {
         return jsonResponse({ error: '该ID已被注册' }, 400);
       }
-
       const salt = crypto.randomUUID();
       const hash = await hashPassword(password, salt);
-
       const id = env.USER.idFromName(userId);
       const stub = env.USER.get(id);
       await stub.fetch(new Request('https://dummy/init', {
         method: 'POST',
         body: JSON.stringify({ nickname, salt, hash }),
       }));
-
       await env.USER_INDEX.put(userId, 'registered');
       return jsonResponse({ success: true });
     }
 
-    // ====== 用户登录 ======
+    // ---- 用户登录 ----
     if (path === '/user/login' && method === 'POST') {
       const { userId, password } = await request.json();
-
       const exists = await env.USER_INDEX.get(userId);
       if (exists === null) {
         return jsonResponse({ error: '用户不存在' }, 404);
       }
-
       const id = env.USER.idFromName(userId);
       const stub = env.USER.get(id);
       const infoRes = await stub.fetch(new Request('https://dummy/info'));
       const { salt, hash: storedHash, tokenVersion, nickname } = await infoRes.json();
-
       const inputHash = await hashPassword(password, salt);
       if (inputHash !== storedHash) {
         return jsonResponse({ error: '密码错误' }, 401);
       }
-
       const token = await new SignJWT({ userId, nickname, version: tokenVersion })
         .setProtectedHeader({ alg: 'HS256' })
         .setIssuedAt()
         .setExpirationTime('180d')
         .sign(JWT_SECRET);
-
       return jsonResponse({ token, userId, nickname });
     }
 
-    // ====== 退出登录 ======
+    // ---- 退出登录 ----
     if (path === '/user/logout' && method === 'POST') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
-
       const id = env.USER.idFromName(auth.userId);
       const stub = env.USER.get(id);
       await stub.fetch(new Request('https://dummy/bump-version', { method: 'POST' }));
       return jsonResponse({ message: '已退出' });
     }
 
-    // ====== 用户相关请求（需鉴权） ======
+    // ---- 用户相关请求（需鉴权） ----
     if (path.startsWith('/user/')) {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
-
       const parts = path.split('/');
       const userId = parts[2];
       if (auth.userId !== userId) {
         return jsonResponse({ error: '无权访问其他用户数据' }, 403);
       }
-
       const id = env.USER.idFromName(userId);
       const stub = env.USER.get(id);
       const newUrl = request.url.replace(`/user/${userId}`, '');
+      const newRequest = new Request(request, { url: newUrl });
+      const response = await stub.fetch(newRequest);
+      const headers = new Headers(response.headers);
+      Object.entries(corsHeaders).forEach(([k, v]) => headers.set(k, v));
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    // ---- 房间相关请求（转发给 Room DO） ----
+    if (path.startsWith('/room/')) {
+      const parts = path.split('/');
+      const roomId = parts[2];                     // 例如 'test'
+      const subPath = '/' + parts.slice(3).join('/'); // 例如 '/ws' 或 '/join'
+      // 创建 Room DO 实例
+      const id = env.ROOM.idFromName(roomId);
+      const stub = env.ROOM.get(id);
+      // 重写 URL，去掉 /room/{roomId} 前缀，让 DO 只看到子路径
+      const newUrl = request.url.replace(`/room/${roomId}`, '');
       const newRequest = new Request(request, { url: newUrl });
       const response = await stub.fetch(newRequest);
       // 添加 CORS 头
@@ -385,32 +396,10 @@ export default {
       return new Response(response.body, { status: response.status, headers });
     }
 
-    // ====== 房间相关请求（部分需鉴权） ======
-    if (path.startsWith('/room/')) {
-      const parts = path.split('/');
-      const roomId = parts[2];
-      const subPath = '/' + parts.slice(3).join('/');
-
-      // 创建房间不需要鉴权（但推荐加上）
-      if (subPath === '/create' && method === 'POST') {
-        // 允许创建
-      }
-
-      const id = env.ROOM.idFromName(roomId);
-      const stub = env.ROOM.get(id);
-      const newUrl = request.url.replace(`/room/${roomId}`, '');
-      const newRequest = new Request(request, { url: newUrl });
-      const response = await stub.fetch(newRequest);
-      const headers = new Headers(response.headers);
-      Object.entries(corsHeaders).forEach(([k, v]) => headers.set(k, v));
-      return new Response(response.body, { status: response.status, headers });
-    }
-
-    // ====== 创建房间（新） ======
+    // ---- 创建房间（新，基于 /room/create） ----
     if (path === '/room/create' && method === 'POST') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
-
       const { roomName } = await request.json();
       const roomId = 'room_' + Math.floor(100000 + Math.random() * 900000);
       const id = env.ROOM.idFromName(roomId);
@@ -419,7 +408,6 @@ export default {
         method: 'POST',
         body: JSON.stringify({ creatorId: auth.userId, roomName: roomName || '群聊' }),
       }));
-
       // 添加到用户的房间列表
       const userDO = env.USER.idFromName(auth.userId);
       const userStub = env.USER.get(userDO);
@@ -427,15 +415,13 @@ export default {
         method: 'POST',
         body: JSON.stringify({ roomId }),
       }));
-
       return jsonResponse({ roomId });
     }
 
-    // ====== 获取用户的所有房间 ======
+    // ---- 获取用户的所有房间 ----
     if (path === '/user/rooms' && method === 'GET') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
-
       const id = env.USER.idFromName(auth.userId);
       const stub = env.USER.get(id);
       const response = await stub.fetch(new Request('https://dummy/rooms'));
@@ -443,7 +429,7 @@ export default {
       return jsonResponse(data);
     }
 
-    // ====== 默认 ======
+    // ---- 默认 ----
     return jsonResponse({ message: 'Voice Signal Server' });
   }
 };
