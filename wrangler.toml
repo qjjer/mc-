@@ -21,3 +21,6 @@ id = "13a9db97e94249388d3496de1bac0fe9"   # 新建一个 KV 命名空间用于�
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room", "User"]
+
+[[migrations]]
+tag = "v2"
