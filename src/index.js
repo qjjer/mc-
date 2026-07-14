@@ -256,9 +256,8 @@ export default {
     
     const url = new URL(request.url);
     const path = url.pathname;
-    const url = new URL(request.url);
-    const path = url.pathname;
     const method = request.method;
+
 
     // ---- CORS 预检 ----
     const corsHeaders = {
