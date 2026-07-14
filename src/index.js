@@ -1,9 +1,4 @@
 // =============================================
-//  导入 JWT 库
-// =============================================
-import { SignJWT, jwtVerify } from 'jose';
-
-// =============================================
 //  User Durable Object
 // =============================================
 export class User {
@@ -23,7 +18,6 @@ export class User {
       await this.storage.put('salt', salt);
       await this.storage.put('hash', hash);
       await this.storage.put('contacts', []);
-      await this.storage.put('tokenVersion', 0);
       await this.storage.put('rooms', []);
       return new Response('OK', { status: 200 });
     }
@@ -31,9 +25,8 @@ export class User {
     if (path === '/info' && method === 'GET') {
       const nickname = await this.storage.get('nickname') || '';
       const contacts = await this.storage.get('contacts') || [];
-      const tokenVersion = await this.storage.get('tokenVersion') || 0;
       const rooms = await this.storage.get('rooms') || [];
-      return new Response(JSON.stringify({ nickname, contacts, tokenVersion, rooms }), {
+      return new Response(JSON.stringify({ nickname, contacts, rooms }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -75,22 +68,12 @@ export class User {
       return new Response('OK', { status: 200 });
     }
 
-    if (path === '/bump-version' && method === 'POST') {
-      let version = await this.storage.get('tokenVersion') || 0;
-      version++;
-      await this.storage.put('tokenVersion', version);
-      return new Response(JSON.stringify({ newVersion: version }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
     return new Response('Not Found', { status: 404 });
   }
 }
 
 // =============================================
-//  Room Durable Object
+//  Room Durable Object（保持不变）
 // =============================================
 export class Room {
   constructor(state, env) {
@@ -209,7 +192,7 @@ export class Room {
 }
 
 // =============================================
-//  辅助函数
+//  辅助函数（密码哈希）
 // =============================================
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -234,39 +217,15 @@ async function hashPassword(password, salt) {
 }
 
 // =============================================
-//  Worker 入口（关键修复：使用 env 参数，而非 process.env）
+//  Worker 入口（无 JWT）
 // =============================================
 export default {
   async fetch(request, env) {
-    // ---- 从环境变量获取 JWT 密钥（使用 env 参数） ----
-    const JWT_SECRET = new TextEncoder().encode(env.JWT_SECRET || 'default-secret-change-me');
-
-    // ---- 辅助函数（依赖 JWT_SECRET） ----
-    async function getUserIdFromAuth(request) {
-      const authHeader = request.headers.get('Authorization');
-      if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-      const token = authHeader.split(' ')[1];
-      try {
-        const { payload } = await jwtVerify(token, JWT_SECRET);
-        return payload.userId;
-      } catch {
-        return null;
-      }
-    }
-
-    async function requireAuth(request) {
-      const userId = await getUserIdFromAuth(request);
-      if (!userId) {
-        return { error: '未授权，请先登录', status: 401 };
-      }
-      return { userId };
-    }
-
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
 
-    // ---- CORS 预检 ----
+    // ---- CORS ----
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
@@ -283,11 +242,28 @@ export default {
       });
     }
 
+    // ---- 从 Authorization header 提取 token，验证 ----
+    async function getUserIdFromToken(request) {
+      const authHeader = request.headers.get('Authorization');
+      if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
+      const token = authHeader.split(' ')[1];
+      const userId = await env.SESSION_STORE.get(token);
+      return userId;
+    }
+
+    async function requireAuth(request) {
+      const userId = await getUserIdFromToken(request);
+      if (!userId) {
+        return { error: '未授权，请先登录', status: 401 };
+      }
+      return { userId };
+    }
+
     // =============================================
-    //  路由处理（顺序很重要！）
+    //  路由处理（顺序重要）
     // =============================================
 
-    // ---- 1. 房间路由（必须最优先） ----
+    // ---- 1. 房间路由（最优先） ----
     if (path.startsWith('/room/')) {
       const parts = path.split('/');
       const roomId = parts[2];
@@ -337,16 +313,15 @@ export default {
       const id = env.USER.idFromName(userId);
       const stub = env.USER.get(id);
       const infoRes = await stub.fetch(new Request('https://dummy/info'));
-      const { salt, hash: storedHash, tokenVersion, nickname } = await infoRes.json();
+      const { salt, hash: storedHash, nickname } = await infoRes.json();
       const inputHash = await hashPassword(password, salt);
       if (inputHash !== storedHash) {
         return jsonResponse({ error: '密码错误' }, 401);
       }
-      const token = await new SignJWT({ userId, nickname, version: tokenVersion })
-        .setProtectedHeader({ alg: 'HS256' })
-        .setIssuedAt()
-        .setExpirationTime('180d')
-        .sign(JWT_SECRET);
+      // 生成 session token
+      const token = crypto.randomUUID();
+      // 存储到 KV，有效期 180 天（秒）
+      await env.SESSION_STORE.put(token, userId, { expirationTtl: 180 * 24 * 60 * 60 });
       return jsonResponse({ token, userId, nickname });
     }
 
@@ -354,13 +329,13 @@ export default {
     if (path === '/user/logout' && method === 'POST') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
-      const id = env.USER.idFromName(auth.userId);
-      const stub = env.USER.get(id);
-      await stub.fetch(new Request('https://dummy/bump-version', { method: 'POST' }));
+      const authHeader = request.headers.get('Authorization');
+      const token = authHeader.split(' ')[1];
+      await env.SESSION_STORE.delete(token);
       return jsonResponse({ message: '已退出' });
     }
 
-    // ---- 6. 用户相关请求 ----
+    // ---- 6. 用户相关请求（需鉴权） ----
     if (path.startsWith('/user/')) {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
