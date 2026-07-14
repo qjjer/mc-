@@ -1,4 +1,4 @@
-name = "voice-signal"
+name = "signal"
 main = "src/index.js"
 compatibility_date = "2024-12-18"
 
