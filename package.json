@@ -1,0 +1,8 @@
+{
+  "name": "voice-signal-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "jose": "^5.0.0"
+  }
+}
