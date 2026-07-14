@@ -226,7 +226,7 @@ export class Room {
 // =========================================
 //  Worker 入口
 // =========================================
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
+//const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
 
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -252,6 +252,10 @@ async function hashPassword(password, salt) {
 
 export default {
   async fetch(request, env) {
+     const JWT_SECRET = new TextEncoder().encode(env.JWT_SECRET);
+    
+    const url = new URL(request.url);
+    const path = url.pathname;
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
