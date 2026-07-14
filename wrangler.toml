@@ -12,11 +12,11 @@ class_name = "User"
 
 [[kv_namespaces]]
 binding = "USER_INDEX"
-id = "3f07c65f0bc84d80abffad96b71f21a6"   # 在 Dashboard 创建后填入
+id = "13a9db97e94249388d3496de1bac0fe9"   # 在 Dashboard 创建后填入
 
 [[kv_namespaces]]
 binding = "SESSION_STORE"
-id = "13a9db97e94249388d3496de1bac0fe9"   # 新建一个 KV 命名空间用于存储 session
+id = "3f07c65f0bc84d80abffad96b71f21a6"   # 新建一个 KV 命名空间用于存储 session
 
 [[migrations]]
 tag = "v1"
