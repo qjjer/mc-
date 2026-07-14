@@ -1,9 +1,11 @@
-// ===== 导入 JWT 库 =====
+// =============================================
+//  导入 JWT 库
+// =============================================
 import { SignJWT, jwtVerify } from 'jose';
 
-// =========================================
+// =============================================
 //  User Durable Object
-// =========================================
+// =============================================
 export class User {
   constructor(state, env) {
     this.state = state;
@@ -15,7 +17,7 @@ export class User {
     const path = url.pathname;
     const method = request.method;
 
-    // ---- 初始化用户 ----
+    // ---- 初始化用户（注册时调用） ----
     if (path === '/init' && method === 'POST') {
       const { nickname, salt, hash } = await request.json();
       await this.storage.put('nickname', nickname);
@@ -79,7 +81,7 @@ export class User {
       return new Response('OK', { status: 200 });
     }
 
-    // ---- 递增 tokenVersion（退出登录） ----
+    // ---- 递增 tokenVersion（用于退出登录） ----
     if (path === '/bump-version' && method === 'POST') {
       let version = await this.storage.get('tokenVersion') || 0;
       version++;
@@ -94,14 +96,14 @@ export class User {
   }
 }
 
-// =========================================
+// =============================================
 //  Room Durable Object
-// =========================================
+// =============================================
 export class Room {
   constructor(state, env) {
     this.state = state;
     this.storage = state.storage;
-    this.connections = [];
+    this.connections = [];   // 当前房间的 WebSocket 连接
   }
 
   // ---- 广播成员更新 ----
@@ -179,7 +181,7 @@ export class Room {
       return new Response('OK', { status: 200 });
     }
 
-    // ---- WebSocket 信令 (关键!) ----
+    // ---- WebSocket 信令 (核心) ----
     if (path === '/ws') {
       const userId = url.searchParams.get('user') || 'unknown';
       const pair = new WebSocketPair();
@@ -189,7 +191,7 @@ export class Room {
       this.connections.push(server);
       server.accept();
 
-      // 尝试获取昵称（从存储中）
+      // 尝试获取昵称
       const members = await this.storage.get('members') || [];
       const member = members.find(m => m.userId === userId);
       server.nickname = member ? member.nickname : '用户';
@@ -223,10 +225,10 @@ export class Room {
   }
 }
 
-// =========================================
-//  Worker 入口
-// =========================================
-//const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
+// =============================================
+//  辅助函数
+// =============================================
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'default-secret-change-me');
 
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -250,14 +252,14 @@ async function hashPassword(password, salt) {
   return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
 }
 
+// =============================================
+//  Worker 入口
+// =============================================
 export default {
   async fetch(request, env) {
-     const JWT_SECRET = new TextEncoder().encode(env.JWT_SECRET);
-    
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
-
 
     // ---- CORS 预检 ----
     const corsHeaders = {
@@ -276,7 +278,7 @@ export default {
       });
     }
 
-    // ---- 辅助：从 JWT 获取 userId ----
+    // ---- 从 JWT 获取 userId ----
     async function getUserIdFromAuth(request) {
       const authHeader = request.headers.get('Authorization');
       if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
@@ -298,19 +300,35 @@ export default {
       return { userId };
     }
 
-    // =========================================
-    //  路由处理
-    // =========================================
+    // =============================================
+    //  路由处理（顺序很重要！）
+    // =============================================
 
-    // ---- 临时用户注册 ----
+    // ---- 1. 房间路由（必须最优先） ----
+    if (path.startsWith('/room/')) {
+      const parts = path.split('/');
+      const roomId = parts[2];                     // 例如 'test'
+      const subPath = '/' + parts.slice(3).join('/'); // 例如 '/ws' 或 '/join'
+      const id = env.ROOM.idFromName(roomId);
+      const stub = env.ROOM.get(id);
+      // 重写 URL，去掉 /room/{roomId} 前缀
+      const newUrl = request.url.replace(`/room/${roomId}`, '');
+      const newRequest = new Request(request, { url: newUrl });
+      const response = await stub.fetch(newRequest);
+      const headers = new Headers(response.headers);
+      Object.entries(corsHeaders).forEach(([k, v]) => headers.set(k, v));
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    // ---- 2. 临时用户注册（网页端） ----
     if (path === '/guest/register' && method === 'POST') {
       const { nickname } = await request.json();
       const userId = 'guest_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-      await env.USER_INDEX.put(userId, 'guest', { expirationTtl: 3600 });
+      // 可存储到 KV，但这里仅返回 userId
       return jsonResponse({ userId });
     }
 
-    // ---- 正式用户注册 ----
+    // ---- 3. 正式用户注册 ----
     if (path === '/user/register' && method === 'POST') {
       const { userId, nickname, password } = await request.json();
       const exists = await env.USER_INDEX.get(userId);
@@ -329,7 +347,7 @@ export default {
       return jsonResponse({ success: true });
     }
 
-    // ---- 用户登录 ----
+    // ---- 4. 用户登录 ----
     if (path === '/user/login' && method === 'POST') {
       const { userId, password } = await request.json();
       const exists = await env.USER_INDEX.get(userId);
@@ -352,7 +370,7 @@ export default {
       return jsonResponse({ token, userId, nickname });
     }
 
-    // ---- 退出登录 ----
+    // ---- 5. 退出登录 ----
     if (path === '/user/logout' && method === 'POST') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
@@ -362,7 +380,7 @@ export default {
       return jsonResponse({ message: '已退出' });
     }
 
-    // ---- 用户相关请求（需鉴权） ----
+    // ---- 6. 用户相关请求（需鉴权） ----
     if (path.startsWith('/user/')) {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
@@ -381,25 +399,7 @@ export default {
       return new Response(response.body, { status: response.status, headers });
     }
 
-    // ---- 房间相关请求（转发给 Room DO） ----
-    if (path.startsWith('/room/')) {
-      const parts = path.split('/');
-      const roomId = parts[2];                     // 例如 'test'
-      const subPath = '/' + parts.slice(3).join('/'); // 例如 '/ws' 或 '/join'
-      // 创建 Room DO 实例
-      const id = env.ROOM.idFromName(roomId);
-      const stub = env.ROOM.get(id);
-      // 重写 URL，去掉 /room/{roomId} 前缀，让 DO 只看到子路径
-      const newUrl = request.url.replace(`/room/${roomId}`, '');
-      const newRequest = new Request(request, { url: newUrl });
-      const response = await stub.fetch(newRequest);
-      // 添加 CORS 头
-      const headers = new Headers(response.headers);
-      Object.entries(corsHeaders).forEach(([k, v]) => headers.set(k, v));
-      return new Response(response.body, { status: response.status, headers });
-    }
-
-    // ---- 创建房间（新，基于 /room/create） ----
+    // ---- 7. 创建房间（新） ----
     if (path === '/room/create' && method === 'POST') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
@@ -421,7 +421,7 @@ export default {
       return jsonResponse({ roomId });
     }
 
-    // ---- 获取用户的所有房间 ----
+    // ---- 8. 获取用户的所有房间 ----
     if (path === '/user/rooms' && method === 'GET') {
       const auth = await requireAuth(request);
       if (auth.error) return jsonResponse({ error: auth.error }, auth.status);
@@ -432,7 +432,12 @@ export default {
       return jsonResponse(data);
     }
 
-    // ---- 默认 ----
-    return jsonResponse({ message: 'Voice Signal Server' });
+    // ---- 9. 根路径 ----
+    if (path === '/') {
+      return jsonResponse({ message: 'Voice Signal Server' });
+    }
+
+    // ---- 10. 其他 ----
+    return new Response('Not Found', { status: 404 });
   }
 };
